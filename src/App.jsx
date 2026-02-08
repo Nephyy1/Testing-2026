@@ -9,6 +9,7 @@ const App = () => {
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [permission, setPermission] = useState(false);
   const [gestureType, setGestureType] = useState('NONE');
+  const [isRunning, setIsRunning] = useState(false); // State baru untuk kontrol start
   
   const videoRef = useRef(null);
   const gestureStateRef = useRef({ type: 'NONE', point: null });
@@ -35,9 +36,11 @@ const App = () => {
         numHands: 1
       });
 
-      navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "user", width: 640, height: 480 } 
-      }).then(stream => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: "user", width: 640, height: 480 } 
+        });
+        
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           videoRef.current.onloadeddata = () => {
@@ -45,7 +48,9 @@ const App = () => {
             predict(landmarker);
           };
         }
-      });
+      } catch (err) {
+        console.error("Camera access denied", err);
+      }
     };
 
     setupVision();
@@ -55,7 +60,6 @@ const App = () => {
   const predict = (landmarker) => {
     if (videoRef.current && videoRef.current.readyState >= 2) {
       const results = landmarker.detectForVideo(videoRef.current, performance.now());
-      
       if (results.landmarks && results.landmarks.length > 0) {
         const detection = detectGesture(results.landmarks[0]);
         gestureStateRef.current = detection;
@@ -72,15 +76,33 @@ const App = () => {
     <div className="relative w-full h-screen bg-black overflow-hidden">
       <video ref={videoRef} className="hidden" playsInline muted autoPlay />
       
-      <UIOverlay activeGesture={gestureType} hasPermission={permission} />
+      {/* UI Overlay menangani tombol Start */}
+      <UIOverlay 
+        activeGesture={gestureType} 
+        hasPermission={permission} 
+        onStart={() => setIsRunning(true)}
+        isRunning={isRunning}
+      />
       
-      <Stage 
-        width={size.w} 
-        height={size.h} 
-        options={{ backgroundAlpha: 0, antialias: true, autoDensity: true }}
-      >
-        <ParticleSystem gestureRef={gestureStateRef} width={size.w} height={size.h} />
-      </Stage>
+      {isRunning && (
+        <Stage 
+          width={size.w} 
+          height={size.h} 
+          options={{ 
+            backgroundAlpha: 0, 
+            antialias: false, // Matikan antialias untuk performa
+            resolution: 1, // Hindari retina scaling berlebihan di HP
+            autoDensity: true 
+          }}
+        >
+          <ParticleSystem 
+            gestureRef={gestureStateRef} 
+            width={size.w} 
+            height={size.h} 
+            isRunning={isRunning}
+          />
+        </Stage>
+      )}
     </div>
   );
 };
