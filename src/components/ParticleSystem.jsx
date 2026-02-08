@@ -1,61 +1,56 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import { Container, Sprite, useTick, useApp } from '@pixi/react';
 import * as PIXI from 'pixi.js';
 import { sampleTextCoordinates } from '../logic/textSampler';
 
-const COUNT = 2500;
+const COUNT = 2000; 
 
-const ParticleSystem = ({ gestureRef, width, height }) => {
-  const [particles, setParticles] = useState([]);
+const ParticleSystem = ({ gestureRef, width, height, isRunning }) => {
   const app = useApp();
-  const particleData = useRef([]);
-  const textureRef = useRef(null);
+  const containerRef = useRef(null);
+  
+  // Data fisik partikel (velocity, target, dll) disimpan di ref, bukan state
+  const physicsData = useRef(new Float32Array(COUNT * 6)); // x, y, vx, vy, baseX, baseY
+  const spritesRef = useRef([]);
   const textCoords = useRef([]);
 
-  useEffect(() => {
+  const texture = useMemo(() => {
     const g = new PIXI.Graphics();
     g.beginFill(0xFFFFFF);
-    g.drawCircle(0, 0, 3);
+    g.drawCircle(0, 0, 2); 
     g.endFill();
-    textureRef.current = app.renderer.generateTexture(g);
+    return app.renderer.generateTexture(g);
+  }, [app]);
 
-    const initial = [];
-    const pData = [];
+  useEffect(() => {
+    if (!isRunning) return;
 
-    for (let i = 0; i < COUNT; i++) {
-      const x = Math.random() * width;
-      const y = Math.random() * height;
-      
-      initial.push({ 
-        key: i, 
-        x, 
-        y, 
-        alpha: Math.random() * 0.5 + 0.3,
-        scale: Math.random() * 0.5 + 0.5
-      });
-      
-      pData.push({
-        x, y,
-        vx: 0, vy: 0,
-        baseX: x, baseY: y,
-        friction: 0.95,
-        targetX: null, targetY: null
-      });
-    }
-
-    setParticles(initial);
-    particleData.current = pData;
     textCoords.current = sampleTextCoordinates("I LOVE YOU", width, height);
-
-  }, [width, height, app]);
+    
+    // Inisialisasi posisi acak
+    for (let i = 0; i < COUNT; i++) {
+      const idx = i * 6;
+      physicsData.current[idx] = Math.random() * width;      // x
+      physicsData.current[idx + 1] = Math.random() * height; // y
+      physicsData.current[idx + 2] = 0;                      // vx
+      physicsData.current[idx + 3] = 0;                      // vy
+      physicsData.current[idx + 4] = physicsData.current[idx]; // baseX
+      physicsData.current[idx + 5] = physicsData.current[idx + 1]; // baseY
+    }
+  }, [width, height, isRunning]);
 
   useTick((delta) => {
-    const { type, point } = gestureRef.current;
-    const pData = particleData.current;
-    
-    let targetX = -1000;
-    let targetY = -1000;
+    if (!isRunning || !containerRef.current) return;
 
+    const { type, point } = gestureRef.current;
+    const data = physicsData.current;
+    const sprites = containerRef.current.children;
+    const coords = textCoords.current;
+    const coordsLen = coords.length;
+
+    let targetX = -5000;
+    let targetY = -5000;
+    
     if (point) {
       targetX = (1 - point.x) * width;
       targetY = point.y * height;
@@ -63,84 +58,105 @@ const ParticleSystem = ({ gestureRef, width, height }) => {
 
     const isLove = type === 'HEART';
     const isOpen = type === 'OPEN_PALM';
+    const isIndex = type === 'INDEX';
 
-    pData.forEach((p, i) => {
+    // Loop optimasi tinggi tanpa alokasi memori baru
+    for (let i = 0; i < COUNT; i++) {
+      const sprite = sprites[i];
+      if (!sprite) continue;
+
+      const idx = i * 6;
+      let px = data[idx];
+      let py = data[idx + 1];
+      let vx = data[idx + 2];
+      let vy = data[idx + 3];
+      const bx = data[idx + 4];
+      const by = data[idx + 5];
+
       let fx = 0;
       let fy = 0;
+      let friction = 0.92;
 
-      if (isLove && textCoords.current.length > 0) {
-        const tIndex = i % textCoords.current.length;
-        const tx = textCoords.current[tIndex].x;
-        const ty = textCoords.current[tIndex].y;
+      if (isLove && coordsLen > 0) {
+        const tIdx = i % coordsLen;
+        const tx = coords[tIdx].x;
+        const ty = coords[tIdx].y;
         
-        fx = (tx - p.x) * 0.05;
-        fy = (ty - p.y) * 0.05;
-        p.friction = 0.85;
+        fx = (tx - px) * 0.08;
+        fy = (ty - py) * 0.08;
+        friction = 0.80;
+        
+        sprite.tint = 0xFF69B4; 
       } else {
-        const dx = p.x - targetX;
-        const dy = p.y - targetY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        if (isOpen) {
-          if (dist < 300) {
-            const force = (300 - dist) / 300;
-            fx = (dx / dist) * force * 3;
-            fy = (dy / dist) * force * 3;
-          }
-        } else if (type === 'INDEX') {
-          if (dist < 250) {
-            fx = -(dx / dist) * 1.5;
-            fy = -(dy / dist) * 1.5;
-          }
-        }
-
-        if (!isOpen && !isLove && type !== 'INDEX') {
-          const homeDx = p.baseX - p.x;
-          const homeDy = p.baseY - p.y;
-          fx += homeDx * 0.001;
-          fy += homeDy * 0.001;
-        }
+        const dx = px - targetX;
+        const dy = py - targetY;
+        const distSq = dx*dx + dy*dy;
         
-        p.friction = 0.95;
+        // Optimasi: Hindari Math.sqrt jika tidak perlu
+        if (isOpen) {
+           if (distSq < 90000) { // 300^2
+             const dist = Math.sqrt(distSq);
+             const force = (300 - dist) / 300;
+             fx = (dx / dist) * force * 5;
+             fy = (dy / dist) * force * 5;
+           }
+        } else if (isIndex) {
+           if (distSq < 40000) { // 200^2
+             const dist = Math.sqrt(distSq);
+             fx = -(dx / dist) * 2;
+             fy = -(dy / dist) * 2;
+           }
+        }
+
+        if (!isLove && !isOpen && !isIndex) {
+           fx += (bx - px) * 0.002;
+           fy += (by - py) * 0.002;
+           sprite.tint = 0x88CCFF; 
+        } else {
+           sprite.tint = 0x88CCFF;
+        }
       }
 
-      p.vx += fx;
-      p.vy += fy;
-      p.vx *= p.friction;
-      p.vy *= p.friction;
-      p.x += p.vx * delta;
-      p.y += p.vy * delta;
-    });
+      vx += fx;
+      vy += fy;
+      vx *= friction;
+      vy *= friction;
+      px += vx * delta;
+      py += vy * delta;
 
-    setParticles(prev => prev.map((item, i) => {
-      const pd = pData[i];
-      return {
-        ...item,
-        x: pd.x,
-        y: pd.y,
-        tint: isLove ? 0xFF0055 : 0x88CCFF
-      };
-    }));
+      // Simpan kembali ke array
+      data[idx] = px;
+      data[idx + 1] = py;
+      data[idx + 2] = vx;
+      data[idx + 3] = vy;
+
+      // Update Sprite Langsung (Bypass React)
+      sprite.x = px;
+      sprite.y = py;
+    }
   });
 
-  if (!textureRef.current) return null;
+  // Render awal sprite statis. React hanya render ini SEKALI.
+  const initialSprites = useMemo(() => {
+    return Array.from({ length: COUNT }).map((_, i) => (
+      <Sprite
+        key={i}
+        texture={texture}
+        x={-100} // Spawn di luar layar dulu
+        y={-100}
+        anchor={0.5}
+        scale={Math.random() * 0.5 + 0.5}
+        alpha={Math.random() * 0.6 + 0.2}
+      />
+    ));
+  }, [texture]);
 
   return (
-    <Container>
-      {particles.map(p => (
-        <Sprite 
-          key={p.key}
-          texture={textureRef.current}
-          x={p.x}
-          y={p.y}
-          alpha={p.alpha}
-          scale={p.scale}
-          tint={p.tint}
-        />
-      ))}
+    <Container ref={containerRef}>
+      {initialSprites}
     </Container>
   );
 };
 
 export default ParticleSystem;
-      
+          
